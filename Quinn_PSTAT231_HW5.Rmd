@@ -1,0 +1,210 @@
+---
+title: "Homework 5"
+author: "Olivia Quinn"
+date: "5/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+### Loading Packages
+```{r}
+#install.packages("janitor")
+#install.packages("glmnet")
+library(janitor)
+library(tidymodels)
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(readr)
+library(corrr)
+library(discrim)
+library(poissonreg)
+library(klaR)
+library(glmnet)
+library(boot)
+library(ggplot2)
+tidymodels_prefer()
+```
+
+### Exercise 1
+
+```{r}
+pokemon <- read_csv("data/Pokemon.csv")
+pokemon <- clean_names(pokemon)
+```
+
+Clean_names() is helpful because it simplifies and unifies all column names in the data.
+
+### Exercise 2
+
+```{r}
+ggplot(pokemon, aes(type_1)) + 
+  geom_bar() + 
+  labs(title= "Barplot: Pokemon Types")
+```
+
+18 classes of the outcome "type_1" -- with relatively few Flying-type pokemon. 
+
+```{r}
+pokemon %>% count(type_1)
+```
+
+```{r}
+dat <- pokemon %>% 
+  filter(type_1 %in% c("Bug", "Fire", "Grass", "Normal", "Water", "Psychic"))
+
+dat <- dat %>%
+  mutate(type_1 = as.factor(type_1)) %>% 
+  mutate(legendary = as.factor(legendary)) %>% 
+  mutate(generation = as.factor(generation))
+```
+
+
+### Exercise 3
+
+
+```{r}
+set.seed(24)
+poke_split <- initial_split(dat, prop = 0.70, strata = type_1)
+poke_train <- training(poke_split)
+poke_test <- testing(poke_split)
+
+dim(poke_train)
+dim(poke_test)
+```
+
+Stratifying the folds is useful because there are fewer of some types of pokemon than others, and because our data set (~458 obs) is not very large. We want each fold to have good variation in terms of type.  
+
+```{r}
+poke_folds <- vfold_cv(poke_train, v = 5, strata = type_1)
+poke_folds
+```
+
+
+### Exercise 4
+
+
+```{r}
+poke_recipe <- recipe(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + hp + sp_def, data = poke_train) %>% 
+  step_dummy(legendary) %>% 
+  step_dummy(generation) %>% 
+  step_normalize(all_predictors())
+```
+
+
+### Exercise 5
+
+
+```{r}
+elastic_net_spec <- 
+  multinom_reg(penalty = tune(), mixture = tune()) %>%
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+  
+elastic_net_workflow <- workflow() %>% 
+  add_recipe(poke_recipe) %>% 
+  add_model(elastic_net_spec)
+
+param_grid <- grid_regular(penalty(range = c(-5, 5)),
+                           mixture(range = c(0, 1)), levels = 10)
+                     
+```
+
+
+We will be fitting 100 total models (5 folds x 10 levels tuning penalty, and 5 folds x 10 levels tuning mixture).
+
+### Exercise 6
+
+
+```{r}
+tune_results <- tune_grid(
+  elastic_net_workflow, 
+  resamples = poke_folds, 
+  grid = param_grid
+)
+
+tune_results
+```
+
+
+Smaller amounts of regularization produce better accuracy and ROC AUC, with the different types of regularization producing similar results at these smaller values. When regularization increases via penalty, ridge models perform marginally better. 
+
+```{r}
+autoplot(tune_results)
+```
+
+
+### Exercise 7
+
+
+```{r}
+best_param <- select_best(tune_results, metric = "accuracy")
+
+elastic_net_final <- finalize_workflow(elastic_net_workflow, best_param)
+
+elastic_net_final_fit <- fit(elastic_net_final, data = poke_train)
+
+augment(elastic_net_final_fit, new_data = poke_test) %>%
+  accuracy(truth = type_1, estimate = .pred_class)
+```
+
+
+### Exercise 8
+
+Overall ROC AUC = 0.69
+```{r}
+augment(elastic_net_final_fit, new_data = poke_test) %>% 
+  roc_auc(type_1, estimate = c(.pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Psychic, .pred_Water))
+```
+
+
+```{r}
+augment(elastic_net_final_fit, new_data = poke_test) %>% 
+  roc_curve(type_1, estimate = c(.pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Psychic, .pred_Water)) %>% 
+  autoplot()
+```
+
+
+```{r}
+augment(elastic_net_final_fit, new_data = poke_test) %>%
+  conf_mat(truth = type_1, estimate = .pred_class) %>% 
+  autoplot(type = "heatmap")
+```
+
+
+The model is not great at predicting Pokemon types. It does best at predicting 'Normal' type pokemon and worst at predicting Water type pokemon. This might be because there are many 'Normal' type pokemon in the dataset. However, there are also many Water type pokemon. Hard to say.  
+
+## For 231 Students
+
+### Exercise 9
+
+In the 2020-2021 season, Stephen Curry, an NBA basketball player, made 337 out of 801 three point shot attempts (42.1%). Use bootstrap resampling on a sequence of 337 1’s (makes) and 464 0’s (misses). For each bootstrap sample, compute and save the sample mean (e.g. bootstrap FG% for the player). Use 1000 bootstrap samples to plot a histogram of those values. Compute the 99% bootstrap confidence interval for Stephen Curry’s “true” end-of-season FG% using the quantile function in R. Print the endpoints of this interval.
+
+```{r}
+set.seed(24)
+
+curry <- data.frame(x=c(0,1))
+
+curry <- curry %>%
+  mutate(count = c(464, 337)) %>%
+  uncount(count)
+
+meanfun <- function(curry, i){
+  d <- curry[i, ]
+  return(mean(d))   
+}
+
+boot_curry <- boot(curry, statistic=meanfun, R=1000)
+boot.ci(boot_curry, conf=0.99, type="bca")
+
+```
+
+```{r}
+plot(boot_curry)
+```
+
+
